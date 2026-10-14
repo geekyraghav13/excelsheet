@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Excel Filter Viewer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<style>
+*{box-sizing:border-box} body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#f4f7fb;color:#172033}
+header{background:#17365d;color:#fff;padding:16px 22px;position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+h1{margin:0;font-size:21px}.sub{opacity:.85;margin-top:4px;font-size:13px}
+.wrap{padding:18px;max-width:1700px;margin:auto}
+.panel{background:#fff;border-radius:12px;padding:16px;box-shadow:0 2px 12px #00000012;margin-bottom:16px}
+.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+label{font-size:12px;font-weight:700;color:#526074;display:block;margin-bottom:5px}
+select,input[type=text],input[type=search]{width:100%;padding:9px 10px;border:1px solid #d5dce7;border-radius:8px;background:#fff;font-size:13px}
+.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:12px;align-items:center}
+button{border:0;border-radius:8px;padding:9px 14px;font-weight:700;cursor:pointer;font-size:13px}
+.primary{background:#17365d;color:#fff}.light{background:#e9eef6;color:#17365d}.green{background:#198754;color:#fff}.red{background:#c0392b;color:#fff}
+.stats{display:flex;gap:12px;flex-wrap:wrap;margin:14px 0}
+.stat{background:#fff;border-radius:10px;padding:12px 16px;box-shadow:0 2px 10px #0000000d;min-width:150px}
+.stat b{display:block;font-size:20px}.stat span{font-size:12px;color:#687386}
+.tablewrap{overflow:auto;max-height:66vh;border:1px solid #e0e5ed;border-radius:9px}
+table{border-collapse:collapse;width:100%;font-size:12px;white-space:nowrap}
+th{position:sticky;top:0;background:#17365d;color:#fff;padding:9px 8px;text-align:left;z-index:2;cursor:pointer;user-select:none}
+th:hover{background:#244a7c}
+td{padding:8px;border-bottom:1px solid #edf0f4} tr:nth-child(even){background:#f8fafc}
+.no{padding:30px;text-align:center;color:#6c7788}
+.small{font-size:12px;color:#687386;margin-top:8px}
+#drop{border:2px dashed #9db3d1;border-radius:14px;padding:50px 20px;text-align:center;background:#fff;cursor:pointer;transition:.15s}
+#drop.over{background:#e9f1fc;border-color:#17365d}
+#drop h2{margin:0 0 8px;color:#17365d}
+details summary{cursor:pointer;font-weight:700;font-size:13px;color:#17365d}
+.cols{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px}
+.cols label{font-weight:400;display:flex;gap:5px;align-items:center;margin:0;color:#172033;font-size:12px}
+.hidden{display:none!important}
+.row2{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin-top:10px}
+.row2>div{flex:1;min-width:200px}
+@media(max-width:700px){.wrap{padding:10px}header{padding:12px}.filters{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1 id="title">Excel Filter Viewer</h1>
+    <div class="sub" id="subtitle">Upload an Excel sheet, filter it your way, download as PDF</div>
+  </div>
+  <button class="light hidden" id="newFileBtn" onclick="resetAll()">📂 Load another file</button>
+</header>
+
+<div class="wrap">
+  <div id="drop">
+    <h2>📊 Drop your Excel file here</h2>
+    <div>or click to choose (.xlsx, .xls, .csv)</div>
+    <input type="file" id="file" accept=".xlsx,.xls,.xlsm,.csv" class="hidden">
+  </div>
+
+  <div id="app" class="hidden">
+    <div class="panel">
+      <div class="row2" style="margin-top:0">
+        <div id="sheetBox" class="hidden"><label>Sheet</label><select id="sheetSel"></select></div>
+        <div style="flex:3"><label>Quick Search (searches all columns)</label>
+          <input type="search" id="search" placeholder="Type anything – branch, ID, name, state…"></div>
+      </div>
+      <div class="filters" id="filters" style="margin-top:12px"></div>
+      <div class="actions">
+        <button class="light" onclick="resetFilters()">↺ Reset filters</button>
+        <button class="green" onclick="exportCSV()">⬇ Download CSV</button>
+        <button class="red" onclick="exportPDF()">⬇ Download PDF</button>
+        <span class="small" style="margin:0">Click a column header to sort.</span>
+      </div>
+      <details style="margin-top:14px">
+        <summary>Choose columns to show / include in PDF</summary>
+        <div class="cols" id="colPicker"></div>
+      </details>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="panel">
+      <div class="tablewrap">
+        <table><thead><tr id="head"></tr></thead><tbody id="body"></tbody></table>
+        <div id="empty" class="no hidden">No matching records found.</div>
+      </div>
+      <div class="small" id="note"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let wb=null, fileName='', columns=[], data=[], filtered=[], visible=new Set(), sortCol=null, sortAsc=true;
+const MAX_FILTER_VALUES=100, ROW_LIMIT=3000;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+/* ---------- file loading ---------- */
+const drop=$('drop'), fileInput=$('file');
+drop.onclick=()=>fileInput.click();
+fileInput.onchange=e=>e.target.files[0]&&readFile(e.target.files[0]);
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over')}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over')}));
+drop.addEventListener('drop',e=>e.dataTransfer.files[0]&&readFile(e.dataTransfer.files[0]));
+
+function readFile(f){
+  if(typeof XLSX==='undefined'){alert('Could not load the Excel reader library. Please check your internet connection and reload.');return;}
+  fileName=f.name;
+  const r=new FileReader();
+  r.onload=e=>{
+    try{ wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'}); }
+    catch(err){ alert('Could not read this file: '+err.message); return; }
+    const sel=$('sheetSel'); sel.innerHTML='';
+    wb.SheetNames.forEach(n=>sel.add(new Option(n,n)));
+    // default to the sheet with the most rows
+    let best=wb.SheetNames[0],max=-1;
+    wb.SheetNames.forEach(n=>{const c=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1}).length;if(c>max){max=c;best=n}});
+    sel.value=best;
+    $('sheetBox').classList.toggle('hidden',wb.SheetNames.length<2);
+    loadSheet(best);
+    drop.classList.add('hidden'); $('app').classList.remove('hidden'); $('newFileBtn').classList.remove('hidden');
+    $('title').textContent=fileName.replace(/\.[^.]+$/,'');
+    $('subtitle').textContent='Search, filter and download your data';
+  };
+  r.readAsArrayBuffer(f);
+}
+$('sheetSel').onchange=e=>loadSheet(e.target.value);
+
+function loadSheet(name){
+  const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:false,defval:''});
+  // header row = first row with at least 2 non-empty cells
+  let h=rows.findIndex(r=>r.filter(v=>String(v).trim()!=='').length>=2);
+  if(h<0)h=0;
+  const hdr=(rows[h]||[]);
+  const keep=[]; const seen={};
+  hdr.forEach((v,i)=>{
+    let n=String(v).trim(); if(!n)return;
+    if(seen[n]){seen[n]++;n=n+' ('+seen[n]+')'}else seen[n]=1;
+    keep.push({i,n});
+  });
+  columns=keep.map(k=>k.n);
+  data=rows.slice(h+1).filter(r=>r.some(v=>String(v).trim()!==''))
+    .map(r=>{const o={};keep.forEach(k=>o[k.n]=String(r[k.i]??'').trim());return o});
+  visible=new Set(columns); sortCol=null;
+  buildColPicker(); buildFilters(); applyFilters();
+}
+
+/* ---------- UI building ---------- */
+function buildColPicker(){
+  $('colPicker').innerHTML='';
+  columns.forEach(c=>{
+    const l=document.createElement('label');
+    const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;
+    cb.onchange=()=>{cb.checked?visible.add(c):visible.delete(c);render()};
+    l.append(cb,document.createTextNode(c));$('colPicker').appendChild(l);
+  });
+}
+function uniq(c){return [...new Set(data.map(r=>r[c]).filter(v=>v!==''))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}))}
+function buildFilters(){
+  const box=$('filters'); box.innerHTML='';
+  columns.forEach(c=>{
+    const u=uniq(c);
+    if(u.length<2||u.length>MAX_FILTER_VALUES)return;
+    const w=document.createElement('div');
+    const lab=document.createElement('label');lab.textContent=c;
+    const sel=document.createElement('select');sel.dataset.col=c;
+    sel.add(new Option('All',''));
+    u.forEach(v=>sel.add(new Option(v,v)));
+    sel.onchange=applyFilters;
+    w.append(lab,sel);box.appendChild(w);
+  });
+}
+
+/* ---------- filtering / rendering ---------- */
+function applyFilters(){
+  const q=$('search').value.trim().toLowerCase();
+  const sels=[...document.querySelectorAll('#filters select')].filter(s=>s.value);
+  filtered=data.filter(r=>
+    sels.every(s=>r[s.dataset.col]===s.value) &&
+    (!q||columns.some(c=>r[c].toLowerCase().includes(q))));
+  if(sortCol){
+    filtered.sort((a,b)=>a[sortCol].localeCompare(b[sortCol],undefined,{numeric:true})*(sortAsc?1:-1));
+  }
+  render();
+}
+function resetFilters(){
+  document.querySelectorAll('#filters select').forEach(s=>s.value='');
+  $('search').value='';applyFilters();
+}
+function resetAll(){
+  $('app').classList.add('hidden');$('newFileBtn').classList.add('hidden');drop.classList.remove('hidden');
+  fileInput.value='';$('title').textContent='Excel Filter Viewer';
+  $('subtitle').textContent='Upload an Excel sheet, filter it your way, download as PDF';
+}
+function visCols(){return columns.filter(c=>visible.has(c))}
+function render(){
+  const vc=visCols();
+  $('stats').innerHTML=
+    `<div class="stat"><b>${filtered.length.toLocaleString()}</b><span>Filtered Records</span></div>`+
+    `<div class="stat"><b>${data.length.toLocaleString()}</b><span>Total Records</span></div>`+
+    `<div class="stat"><b>${vc.length}</b><span>Columns Shown</span></div>`;
+  $('head').innerHTML=vc.map(c=>`<th data-c="${esc(c)}">${esc(c)}${sortCol===c?(sortAsc?' ▲':' ▼'):''}</th>`).join('');
+  $('head').querySelectorAll('th').forEach(th=>th.onclick=()=>{
+    const c=th.dataset.c; sortAsc=sortCol===c?!sortAsc:true; sortCol=c; applyFilters();
+  });
+  $('body').innerHTML=filtered.slice(0,ROW_LIMIT).map(r=>'<tr>'+vc.map(c=>`<td>${esc(r[c])}</td>`).join('')+'</tr>').join('');
+  $('empty').classList.toggle('hidden',filtered.length>0);
+  $('note').textContent=filtered.length>ROW_LIMIT?`Showing first ${ROW_LIMIT.toLocaleString()} rows on screen. Downloads include all ${filtered.length.toLocaleString()} filtered rows.`:'';
+}
+$('search').addEventListener('input',applyFilters);
+
+/* ---------- exports ---------- */
+function activeFilterText(){
+  const parts=[...document.querySelectorAll('#filters select')].filter(s=>s.value).map(s=>`${s.dataset.col}: ${s.value}`);
+  const q=$('search').value.trim(); if(q)parts.push(`Search: "${q}"`);
+  return parts.join('  |  ');
+}
+function baseName(){return fileName.replace(/\.[^.]+$/,'')+'_filtered'}
+function exportCSV(){
+  const vc=visCols();
+  const rows=[vc,...filtered.map(r=>vc.map(c=>r[c]))];
+  const csv=rows.map(r=>r.map(v=>`"${String(v).replaceAll('"','""')}"`).join(',')).join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob(["﻿"+csv],{type:'text/csv;charset=utf-8;'}));
+  a.download=baseName()+'.csv';a.click();URL.revokeObjectURL(a.href);
+}
+function exportPDF(){
+  if(!window.jspdf){alert('PDF library could not load. Please check your internet connection and reload.');return;}
+  if(!filtered.length){alert('No records to export.');return;}
+  const vc=visCols(); if(!vc.length){alert('Select at least one column.');return;}
+  const {jsPDF}=window.jspdf;
+  const fmt=vc.length>14?'a3':'a4';
+  const doc=new jsPDF({orientation:'landscape',unit:'pt',format:fmt});
+  const W=doc.internal.pageSize.getWidth();
+  const fs=vc.length>16?5.5:vc.length>12?6.5:vc.length>8?7.5:9;
+  doc.setFontSize(14);doc.setTextColor(23,54,93);
+  doc.text($('title').textContent,28,32);
+  doc.setFontSize(8);doc.setTextColor(90);
+  const f=activeFilterText();
+  doc.text(`Records: ${filtered.length} of ${data.length}   |   Generated: ${new Date().toLocaleString()}`,28,46);
+  let top=58;
+  if(f){const lines=doc.splitTextToSize('Filters → '+f,W-56);doc.text(lines,28,58);top=58+lines.length*10;}
+  doc.autoTable({
+    head:[vc], body:filtered.map(r=>vc.map(c=>r[c])),
+    startY:top+4, margin:{left:20,right:20,bottom:28},
+    styles:{fontSize:fs,cellPadding:2.5,overflow:'linebreak'},
+    headStyles:{fillColor:[23,54,93],textColor:255},
+    alternateRowStyles:{fillColor:[245,248,252]},
+    didDrawPage:()=>{
+      doc.setFontSize(7);doc.setTextColor(120);
+      doc.text('Page '+doc.internal.getNumberOfPages(),W-60,doc.internal.pageSize.getHeight()-12);
+    }
+  });
+  doc.save(baseName()+'.pdf');
+}
+</script>
+</body>
+</html>
